@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import re
+import xbmc
 import xbmcgui
 import xbmcplugin
 import xbmcaddon
 from xbmcvfs import translatePath
 
 from bs4 import BeautifulSoup
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import requests
 import random
 import json
@@ -19,15 +21,68 @@ from libs.utils import get_url
 if len(sys.argv) > 1:
     _handle = int(sys.argv[1])
 
+_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0'
+
+def _get_hokejka_live_url(link):
+    page_url = 'https://www.hokej.cz' + link
+    headers = {'User-Agent': _USER_AGENT}
+    page = requests.get(page_url, cookies=get_cookies(), headers=headers, timeout=30)
+    page.raise_for_status()
+
+    soup = BeautifulSoup(page.content, 'html.parser')
+    stream_code = None
+    for script in soup.find_all('script'):
+        script_text = script.string or script.get_text()
+        if 'LiveboxHLPlayer.live' not in script_text:
+            continue
+        match = re.search(r'\blive\s*:\s*["\']([^"\']+)["\']', script_text)
+        if match is not None:
+            stream_code = match.group(1)
+            break
+    if stream_code is None:
+        raise ValueError('Livebox stream code is missing from Hokejka page')
+
+    embed_url = 'https://api.hl.livebox.cz/v1/embed-hokejka.js?__tok{}__={}'.format(random.randrange(100000000, 999999999), random.randrange(100000000, 999999999))
+    embed_headers = headers.copy()
+    embed_headers['Referer'] = page.url
+    embed_response = requests.get(embed_url, headers=embed_headers, timeout=30)
+    embed_response.raise_for_status()
+
+    declaration = re.search(r'my\.embedurls\s*=\s*', embed_response.text)
+    if declaration is None:
+        raise ValueError('Livebox embed URLs are missing')
+    try:
+        embed_urls, _ = json.JSONDecoder().raw_decode(embed_response.text, declaration.end())
+    except json.JSONDecodeError as error:
+        raise ValueError('Livebox embed URLs are invalid') from error
+
+    stream = embed_urls.get(stream_code) if isinstance(embed_urls, dict) else None
+    stream_url = stream.get('hls_h5') if isinstance(stream, dict) else None
+    if not isinstance(stream_url, str):
+        raise ValueError('Livebox HLS URL is unavailable for this match')
+
+    if stream_url.startswith('//'):
+        stream_url = 'https:' + stream_url
+    parsed_url = urlparse(stream_url)
+    if (
+        parsed_url.scheme != 'https'
+        or parsed_url.hostname is None
+        or not (parsed_url.hostname == 'livebox.cz' or parsed_url.hostname.endswith('.livebox.cz'))
+        or not parsed_url.path.endswith('.m3u8')
+    ):
+        raise ValueError('Livebox returned an invalid HLS URL')
+    return stream_url
+
 def play_hokejka_live(link):
-    cookies = get_cookies()
-    r = requests.get('https://www.hokej.cz' + link, cookies = cookies)
-    for row in r.text.split('\n'):
-        if 'hls: ' in row:
-            url = row.strip().replace('hls: "', '').replace('\/', '/').replace('",', '')
-            url = 'https:' + url
-            list_item = xbmcgui.ListItem(path = url)
-            xbmcplugin.setResolvedUrl(_handle, True, list_item)    
+    try:
+        url = _get_hokejka_live_url(link)
+    except (requests.RequestException, ValueError) as error:
+        xbmc.log('Hokejka TV live stream resolution failed: {}'.format(error), xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Hokejka TV', 'Nepodařilo se získat URL živého streamu', xbmcgui.NOTIFICATION_ERROR, 3000)
+        xbmcplugin.setResolvedUrl(_handle, False, xbmcgui.ListItem())
+    else:
+        list_item = xbmcgui.ListItem(path=url)
+        xbmcplugin.setResolvedUrl(_handle, True, list_item)
     xbmcplugin.endOfDirectory(_handle, cacheToDisc = False)
 
 def play_hokejka_stream(link):
@@ -58,8 +113,7 @@ def get_hokejka_live_streams():
             sb = row.strip().replace('var scoreboardDay = "', '').replace('";', '')
         if 'var streamLeague' in row:
             league = row.strip().replace('var streamLeague = ', '').replace(';', '')
-            # matches = requests.get('https://s3-eu-west-1.amazonaws.com/hokej.cz/scoreboard/' + sb + '.json').json()
-            matches = requests.get('https://s3.eu-west-1.amazonaws.com/data.onlajny.com/odds/tipsport-live.json').json()
+            matches = requests.get('https://s3-eu-west-1.amazonaws.com/hokej.cz/scoreboard/' + sb + '.json').json()
             if league in matches:
                 if 'matches' in matches[league]:
                     for match in matches[league]['matches']:
@@ -157,7 +211,7 @@ def list_hokejka_main(label):
 
 def load_page(url):
     cookies = get_cookies()
-    r = requests.get(url , cookies = cookies, headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0'})
+    r = requests.get(url , cookies = cookies, headers = {'User-Agent': _USER_AGENT})
     soup = BeautifulSoup(r.content, 'html.parser')
     return soup
 

@@ -1,3 +1,6 @@
+v1.2.7 (31.10.2026)
+- oprava živého vysílání u HokejkaTV
+
 v1.2.6 (28.10.2026)
 - oprava archivu u HokejkaTV
 
@@ -11,6 +14,3 @@ v1.2.4 (19.9.2026)
 
 v1.2.3 (2.5.2026)
 - úprava zjišťování URL u live streamu TVcom
-
-v1.2.2 (22.11.2025)
-- oprava zobrazení live streamů z Hokejka TV v Live a plánované streamy
